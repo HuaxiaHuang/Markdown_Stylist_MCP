@@ -1,33 +1,38 @@
 /*
- * markdown_stylist_mcp — 极简 Mac 风格样式表
- * ==========================================
+ * markdown_stylist_mcp — 现代极简技术文档样式表
+ * ================================================
  * 本文件是内置 CSS 的独立副本，供参考和独立使用。
  * MCP 工具实际使用的样式内嵌于 templates/base.html 中。
  *
  * 视觉规范:
- *   - 目录 (TOC): 左侧 5px 浅蓝装饰线，无圆点，层级缩进
- *   - 表格: 斑马纹 (#fff / #f9f9f9)，1px solid #ddd 细边框
- *   - 代码块: 深色背景 #282c34，Mac 三色圆点装饰
- *   - 引用块: 浅蓝背景属性卡片
+ *   - 字体: 系统原生字体栈，英文优先 Inter，中文优先苹方
+ *   - 标题: 700 字重 + 深色 (#111827)，紧凑字间距
+ *   - 正文: 1.75 倍行高 + 深灰色 (#374151)，段落宽松间距
+ *   - 链接: 功能蓝 (#2563eb)，无下划线，hover 平滑过渡
+ *   - 代码块: 深色背景 #1e293b，Mac 三色圆点装饰
+ *   - 表格: 斑马纹 (#fff / #f8fafc)，hover 浅蓝高亮
+ *   - 抗锯齿渲染，高清屏文字边缘锐利
  */
 
 /* ========== CSS Variables ========== */
 :root {
   --bg: #ffffff;
-  --text: #2c3e50;
-  --text-secondary: #5a6c7d;
-  --border: #e0e4e8;
-  --accent: #3498db;
-  --accent-light: #eaf4fd;
-  --code-bg: #282c34;
-  --code-text: #abb2bf;
-  --table-stripe: #f9f9f9;
+  --text: #374151;
+  --text-secondary: #6b7280;
+  --border: #e5e7eb;
+  --accent: #2563eb;
+  --accent-light: #eff6ff;
+  --accent-hover: #1d4ed8;
+  --heading: #111827;
+  --code-bg: #1e293b;
+  --code-text: #e2e8f0;
+  --table-stripe: #f8fafc;
   --blockquote-bg: #f0f7ff;
-  --blockquote-border: #3498db;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --blockquote-border: #2563eb;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-mono: "SF Mono", "Fira Code", "Cascadia Code", "Source Code Pro",
-    Consolas, monospace;
+    "JetBrains Mono", Consolas, monospace;
   --radius: 8px;
 }
 
@@ -36,9 +41,12 @@ body {
   font-family: var(--font-sans);
   color: var(--text);
   background: #f5f6f8;
-  line-height: 1.8;
+  line-height: 1.75;
   font-size: 15px;
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 .page {
@@ -49,6 +57,39 @@ body {
   box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 6px 20px rgba(0,0,0,0.04);
   padding: 60px 70px;
 }
+
+/* ========== Headings ========== */
+h1 {
+  font-size: 2em;
+  font-weight: 700;
+  color: var(--heading);
+  letter-spacing: -0.02em;
+  margin: 0 0 8px 0;
+}
+h2 {
+  font-size: 1.4em;
+  font-weight: 700;
+  color: var(--heading);
+  margin: 40px 0 14px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+h3 { font-size: 1.15em; font-weight: 700; color: var(--heading); margin: 28px 0 10px 0; }
+h4 { font-size: 1.05em; font-weight: 700; color: var(--heading); margin: 20px 0 8px 0; }
+h5, h6 { font-size: 1em; font-weight: 700; color: var(--heading); margin: 16px 0 6px 0; }
+
+/* ========== Paragraphs & Inline ========== */
+p { margin: 0 0 1.5rem 0; }
+a {
+  color: var(--accent);
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+strong { font-weight: 600; color: var(--heading); }
 
 /* ========== Metadata Card ========== */
 .meta-card {
@@ -73,9 +114,18 @@ body {
   margin-bottom: 40px;
 }
 .toc ul { list-style: none; padding: 0; margin: 0; }
-.toc a { color: var(--accent); text-decoration: none; }
+.toc li { padding: 4px 0; }
+.toc a {
+  color: var(--accent);
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+.toc a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
 .toc ul ul { padding-left: 18px; }
-.toc ul ul a { color: #5a6c7d; font-size: 0.88em; }
+.toc ul ul a { color: var(--text-secondary); font-size: 0.88em; }
 
 /* ========== Tables (Zebra) ========== */
 table {
@@ -84,11 +134,22 @@ table {
   margin: 20px 0;
   font-size: 0.93em;
 }
-thead { background: #f0f4f8; }
-th, td { padding: 9px 14px; border: 1px solid #ddd; }
+thead { background: #f1f5f9; }
+th {
+  padding: 10px 14px;
+  text-align: left;
+  font-weight: 700;
+  border: 1px solid #ddd;
+  color: var(--heading);
+}
+td {
+  padding: 9px 14px;
+  border: 1px solid #ddd;
+  vertical-align: top;
+}
 tbody tr:nth-child(odd)  { background: #ffffff; }
-tbody tr:nth-child(even) { background: #f9f9f9; }
-tbody tr:hover { background: #eaf4fd; }
+tbody tr:nth-child(even) { background: var(--table-stripe); }
+tbody tr:hover { background: var(--accent-light); }
 
 /* ========== Mac Code Blocks ========== */
 .code-block-wrapper {
@@ -98,7 +159,7 @@ tbody tr:hover { background: #eaf4fd; }
   box-shadow: 0 2px 8px rgba(0,0,0,0.12);
 }
 .code-block-header {
-  background: #21252b;
+  background: #1a1f2b;
   padding: 10px 16px;
   display: flex;
   align-items: center;
@@ -130,8 +191,15 @@ blockquote {
   font-size: 0.95em;
 }
 
+/* ========== Lists ========== */
+ul, ol { margin: 0 0 1.5rem 0; padding-left: 24px; }
+li { padding: 4px 0; }
+
 /* ========== Print ========== */
 @media print {
   body { background: #fff; }
   .page { box-shadow: none; max-width: 100%; margin: 0; padding: 20px 30px; }
+  pre { white-space: pre-wrap; word-break: break-all; }
+  .code-block-header { background: #e0e4e8; }
+  .mac-dot { background: #ccc !important; }
 }
