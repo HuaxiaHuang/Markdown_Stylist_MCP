@@ -574,6 +574,97 @@ async def handle_convert(args: dict) -> list[TextContent]:
 # ║                     ENTRY POINT                              ║
 # ╚══════════════════════════════════════════════════════════════╝
 
+def cli_main():
+    """交互式命令行模式：人直接运行 python markdown_stylist_mcp.py 时进入。"""
+    print("=" * 52)
+    print("  Markdown Stylist — 极简 Mac 风格 MD -> HTML/PDF")
+    print("=" * 52)
+    print()
+
+    # ── Step 1: 输入路径 ──
+    while True:
+        input_path = input("[INPUT] 请输入 Markdown 文件或目录路径: ").strip().strip('"')
+        if not input_path:
+            print("[WARN] 路径不能为空，请重新输入。\n")
+            continue
+        p = Path(input_path).resolve()
+        if not p.exists():
+            print(f"[ERROR] 路径不存在: {p}\n")
+            continue
+        break
+
+    # 发现文件
+    if p.is_file():
+        md_files = [p]
+        print(f"   [FILE] 单文件模式: {p.name}")
+    else:
+        md_files = discover_md_files(str(p))
+        print(f"   [DIR] 目录模式: 发现 {len(md_files)} 个 Markdown 文件:")
+        for i, f in enumerate(md_files, 1):
+            size_kb = f.stat().st_size / 1024
+            print(f"      {i}. {f.name} ({size_kb:.1f} KB)")
+        print()
+
+    # ── Step 2: 输出路径 ──
+    while True:
+        output_path = input("[OUTPUT] 请输入输出目录路径: ").strip().strip('"')
+        if not output_path:
+            print("[WARN] 路径不能为空，请重新输入。\n")
+            continue
+        output_dir = Path(output_path).resolve()
+        break
+
+    # ── Step 3: 输出格式 ──
+    print()
+    print("[FORMAT] 请选择输出格式:")
+    print("   1. HTML（网页交互版）")
+    print("   2. PDF（专业打印版）")
+
+    while True:
+        choice = input("   请输入 1 或 2: ").strip()
+        if choice == "1":
+            output_format = "html"
+            break
+        elif choice == "2":
+            output_format = "pdf"
+            break
+        else:
+            print("[WARN] 无效选择，请输入 1 或 2。")
+
+    # ── Step 4: 执行转换 ──
+    print()
+    print("-" * 52)
+    print(f"[START] 开始转换 | 格式: {output_format.upper()} | 文件数: {len(md_files)}")
+    print("-" * 52)
+
+    input_base = p.parent if p.is_file() else p
+    output_dir.mkdir(parents=True, exist_ok=True)
+    success = 0
+
+    for i, md_file in enumerate(md_files, 1):
+        print(f"[{i}/{len(md_files)}] {md_file.name} ...", end=" ", flush=True)
+        try:
+            result = process_single_file(md_file, output_dir, output_format,
+                                         preserve_structure=True, input_base=input_base)
+            if result["status"] == "success":
+                outs = result.get("outputs", {})
+                out_path = outs.get(output_format, "")
+                if out_path:
+                    print(f"OK -> {Path(out_path).name}")
+                elif "pdf_error" in outs:
+                    print(f"WARN: {outs['pdf_error'][:50]}")
+                else:
+                    print("OK")
+                success += 1
+            else:
+                print(f"SKIP: {result.get('reason', '未知')}")
+        except Exception as e:
+            print(f"ERROR: {e}")
+
+    print()
+    print(f"[DONE] 成功 {success}/{len(md_files)}  ->  {output_dir}")
+
+
 def main():
     """启动 MCP stdio 服务端。"""
     import asyncio
@@ -585,4 +676,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--mcp" in sys.argv:
+        main()
+    else:
+        cli_main()
