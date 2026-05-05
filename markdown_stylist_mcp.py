@@ -227,39 +227,92 @@ def render_html(title: str, content_html: str, toc_html: str,
     )
 
 
-def check_pdf_support() -> dict:
-    """预检 PDF 生成能力。返回 {'ok': True/False, 'reason': ...}"""
+def _pdf_via_playwright(html_content: str, output_pdf_path: Path) -> bool:
+    """用 Playwright (无头 Chromium) 生成 PDF。成功返回 True。"""
     try:
-        from weasyprint import HTML
-        HTML(string="<p>test</p>").write_pdf()
-        return {"ok": True}
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.set_content(html_content, wait_until="networkidle")
+            page.pdf(path=str(output_pdf_path), print_background=True,
+                     format="A4", margin={"top": "15mm", "bottom": "15mm",
+                                          "left": "12mm", "right": "12mm"})
+            browser.close()
+        return True
     except ImportError:
-        return {"ok": False, "reason": "WeasyPrint 未安装。运行: pip install weasyprint"}
-    except OSError as e:
-        if "gobject" in str(e).lower() or "libgobject" in str(e).lower():
-            return {"ok": False,
-                    "reason": "缺少 GTK3 系统库。Windows 请安装 GTK3 runtime: "
-                              "https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer/releases"}
-        return {"ok": False, "reason": f"PDF 库加载失败: {e}"}
+        return False
+    except Exception:
+        return False
 
 
-def convert_to_pdf(html_content: str, output_pdf_path: Path) -> str:
-    """使用 WeasyPrint 将 HTML 转换为 PDF。"""
+def _pdf_via_weasyprint(html_content: str, output_pdf_path: Path) -> bool:
+    """用 WeasyPrint 生成 PDF。成功返回 True。"""
     try:
         from weasyprint import HTML
         HTML(string=html_content).write_pdf(str(output_pdf_path))
-        return str(output_pdf_path)
+        return True
     except ImportError:
-        raise ImportError("PDF 转换需要安装 WeasyPrint: pip install weasyprint")
+        return False
     except OSError as e:
         if "gobject" in str(e).lower() or "libgobject" in str(e).lower():
-            raise RuntimeError(
-                "PDF 生成需要 GTK3 系统库。Windows: 安装 GTK3 runtime; "
-                "macOS: brew install pango; Linux: sudo apt install libpango-1.0-0"
-            )
-        raise RuntimeError(f"PDF 生成失败: {e}")
-    except Exception as e:
-        raise RuntimeError(f"PDF 生成失败: {e}")
+            return False
+        return False
+    except Exception:
+        return False
+
+
+def check_pdf_support() -> dict:
+    """预检 PDF 生成能力。返回 {'ok': True/False, 'engine': ..., 'reason': ...}"""
+    # 优先检测 Playwright
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.set_content("<p>test</p>")
+            page.pdf()
+            browser.close()
+        return {"ok": True, "engine": "Playwright (Chromium)"}
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # 回退检测 WeasyPrint
+    try:
+        from weasyprint import HTML
+        HTML(string="<p>test</p>").write_pdf()
+        return {"ok": True, "engine": "WeasyPrint"}
+    except ImportError:
+        return {"ok": False, "engine": None,
+                "reason": "PDF 引擎未安装。可选方案:\n"
+                          "  方案1 (推荐): pip install playwright && python -m playwright install chromium\n"
+                          "  方案2: pip install weasyprint (Windows 需额外安装 GTK3 runtime)"}
+    except OSError as e:
+        if "gobject" in str(e).lower() or "libgobject" in str(e).lower():
+            return {"ok": False, "engine": "WeasyPrint",
+                    "reason": "WeasyPrint 缺少 GTK3 系统库。建议改用 Playwright:\n"
+                              "  pip install playwright && python -m playwright install chromium"}
+        return {"ok": False, "engine": None, "reason": f"PDF 库加载失败: {e}"}
+
+
+def convert_to_pdf(html_content: str, output_pdf_path: Path) -> str:
+    """将 HTML 转换为 PDF。优先使用 Playwright，回退到 WeasyPrint。"""
+    # 引擎 1: Playwright（Windows/Mac/Linux 通用，无需系统库）
+    if _pdf_via_playwright(html_content, output_pdf_path):
+        return str(output_pdf_path)
+
+    # 引擎 2: WeasyPrint（需 GTK3 系统库）
+    if _pdf_via_weasyprint(html_content, output_pdf_path):
+        return str(output_pdf_path)
+
+    # 两个引擎都不可用
+    raise RuntimeError(
+        "PDF 生成失败：未检测到可用引擎。\n"
+        "  方案1 (推荐): pip install playwright && python -m playwright install chromium\n"
+        "  方案2: pip install weasyprint (Windows 需额外安装 GTK3 runtime)"
+    )
 
 
 # ╔══════════════════════════════════════════════════════════════╗
