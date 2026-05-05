@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+
+# Generated output (HTML/PDF go to these directories, not tracked)
+output/
+rendered_html/
+Log/
+*.pdf
+
+# Legacy nested clone (kept for reference during migration)
+Markdown_Stylist_MCP_Github/
+
+# Personal documents (not for release)
+WeightMind_MCP_Description.md

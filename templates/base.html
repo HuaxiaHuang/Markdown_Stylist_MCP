@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ title }}</title>
+<style>
+  /* ========== CSS Reset & Base ========== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #ffffff;
+    --text: #2c3e50;
+    --text-secondary: #5a6c7d;
+    --border: #e0e4e8;
+    --accent: #3498db;
+    --accent-light: #eaf4fd;
+    --code-bg: #282c34;
+    --code-text: #abb2bf;
+    --table-stripe: #f9f9f9;
+    --blockquote-bg: #f0f7ff;
+    --blockquote-border: #3498db;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --font-mono: "SF Mono", "Fira Code", "Cascadia Code", "Source Code Pro", Consolas, monospace;
+    --radius: 8px;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    color: var(--text);
+    background: #f5f6f8;
+    line-height: 1.8;
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ========== Page Container ========== */
+  .page {
+    max-width: 820px;
+    margin: 40px auto;
+    background: var(--bg);
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 6px 20px rgba(0,0,0,0.04);
+    padding: 60px 70px;
+  }
+
+  @media (max-width: 860px) {
+    .page { margin: 0; border-radius: 0; padding: 32px 24px; }
+  }
+
+  /* ========== Metadata Header Card ========== */
+  .meta-card {
+    background: var(--blockquote-bg);
+    border-left: 4px solid var(--blockquote-border);
+    border-radius: 0 6px 6px 0;
+    padding: 16px 20px;
+    margin: 0 0 40px 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+  }
+  .meta-card span { white-space: nowrap; }
+  .meta-card strong { color: var(--text); font-weight: 600; }
+
+  /* ========== Headings ========== */
+  h1 { font-size: 2em; font-weight: 700; margin: 0 0 8px 0; color: #1a1a2e; letter-spacing: -0.02em; }
+  h2 { font-size: 1.4em; font-weight: 600; margin: 40px 0 14px 0; color: #1a1a2e; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.15em; font-weight: 600; margin: 28px 0 10px 0; color: #2c3e50; }
+  h4 { font-size: 1.05em; font-weight: 600; margin: 20px 0 8px 0; color: #34495e; }
+  h5, h6 { font-size: 1em; font-weight: 600; margin: 16px 0 6px 0; color: #5a6c7d; }
+
+  /* ========== TOC ========== */
+  .toc {
+    background: #fafbfc;
+    border-left: 5px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 24px 28px;
+    margin: 0 0 40px 0;
+  }
+  .toc .toc-title {
+    font-size: 1.1em;
+    font-weight: 700;
+    margin-bottom: 14px;
+    color: #1a1a2e;
+  }
+  .toc ul { list-style: none; padding: 0; margin: 0; }
+  .toc li { margin: 4px 0; }
+  .toc a {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 0.92em;
+    display: inline-block;
+    padding: 2px 0;
+    transition: color 0.15s;
+  }
+  .toc a:hover { color: #2176ae; text-decoration: underline; }
+  .toc ul ul { padding-left: 18px; }
+  .toc ul ul a { color: #5a6c7d; font-size: 0.88em; }
+  .toc ul ul ul { padding-left: 16px; }
+
+  /* ========== Paragraphs & Inline ========== */
+  p { margin: 0 0 14px 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { font-weight: 600; color: #1a1a2e; }
+  em { font-style: italic; }
+
+  code:not(pre code) {
+    background: #f0f0f0;
+    color: #d63384;
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
+  /* ========== Mac-Style Code Blocks ========== */
+  .code-block-wrapper {
+    margin: 20px 0;
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  }
+  .code-block-header {
+    background: #21252b;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .mac-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .mac-dot.red    { background: #ff5f56; }
+  .mac-dot.yellow { background: #ffbd2e; }
+  .mac-dot.green  { background: #27c93f; }
+  .code-block-header .file-label {
+    flex: 1;
+    text-align: center;
+    color: #5c6370;
+    font-size: 12px;
+    font-family: var(--font-mono);
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-text);
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    line-height: 1.65;
+    padding: 20px 24px;
+    margin: 0;
+    overflow-x: auto;
+    white-space: pre;
+    tab-size: 4;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; font-size: inherit; }
+
+  /* ========== Tables (Zebra) ========== */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 0.93em;
+  }
+  thead { background: #f0f4f8; }
+  th {
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    border: 1px solid #ddd;
+    color: #1a1a2e;
+  }
+  td {
+    padding: 9px 14px;
+    border: 1px solid #ddd;
+    vertical-align: top;
+  }
+  tbody tr:nth-child(odd)  { background: #ffffff; }
+  tbody tr:nth-child(even) { background: #f9f9f9; }
+  tbody tr:hover { background: #eaf4fd; }
+  table code {
+    background: #f0f0f0;
+    color: #d63384;
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+
+  /* ========== Blockquotes ========== */
+  blockquote {
+    background: #f8fafc;
+    border-left: 4px solid #94a3b8;
+    margin: 20px 0;
+    padding: 14px 20px;
+    border-radius: 0 6px 6px 0;
+    color: #475569;
+    font-size: 0.95em;
+  }
+  blockquote p { margin: 0; }
+  blockquote.meta {
+    background: var(--blockquote-bg);
+    border-left-color: var(--blockquote-border);
+  }
+
+  /* ========== Lists ========== */
+  ul, ol { margin: 0 0 14px 0; padding-left: 24px; }
+  li { margin: 4px 0; }
+  ul ul, ol ol, ul ol, ol ul { margin-bottom: 0; }
+
+  /* ========== Horizontal Rule ========== */
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 32px 0;
+  }
+
+  /* ========== Images ========== */
+  img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px;
+    margin: 16px 0;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+  figure { margin: 20px 0; text-align: center; }
+  figcaption {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+    margin-top: 8px;
+  }
+
+  /* ========== Print Styles ========== */
+  @media print {
+    body { background: #fff; }
+    .page { box-shadow: none; max-width: 100%; margin: 0; padding: 20px 30px; }
+    pre { white-space: pre-wrap; word-break: break-all; }
+    .code-block-header { background: #e0e4e8; }
+    .mac-dot.red { background: #ccc; }
+    .mac-dot.yellow { background: #ccc; }
+    .mac-dot.green { background: #ccc; }
+  }
+
+  /* ========== Utility ========== */
+  .back-to-top {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    width: 40px;
+    height: 40px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    font-size: 18px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    opacity: 0.8;
+    transition: opacity 0.2s;
+  }
+  .back-to-top:hover { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Metadata Header -->
+  <div class="meta-card">
+    {% for item in meta_items %}
+    <span><strong>{{ item.label }}:</strong> {{ item.value }}</span>
+    {% endfor %}
+  </div>
+
+  <!-- Title -->
+  <h1>{{ title }}</h1>
+
+  <!-- Table of Contents -->
+  {% if toc_html %}
+  <div class="toc">
+    <div class="toc-title">📑 目录</div>
+    {{ toc_html | safe }}
+  </div>
+  {% endif %}
+
+  <!-- Rendered Content -->
+  {{ content | safe }}
+
+</div><!-- .page -->
+
+<a href="#" class="back-to-top" title="回到顶部">↑</a>
+</body>
+</html>

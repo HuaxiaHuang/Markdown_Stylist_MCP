@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "markdown-stylist": {
+      "command": "python",
+      "args": ["markdown_stylist_mcp.py"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
