@@ -3,8 +3,10 @@ markdown>=3.7
 Jinja2>=3.1
 beautifulsoup4>=4.12
 lxml>=5.0
-# PDF 引擎二选一:
-#   方案1 (推荐): Playwright — 全平台通用，无需系统库
+latex2mathml>=3.77
+
+# PDF engine. Playwright is preferred because Chromium renders MathML well.
 playwright>=1.48
-#   方案2: WeasyPrint — Windows 需额外安装 GTK3 runtime
+
+# Optional PDF fallback. On Windows, WeasyPrint may require extra GTK runtime.
 WeasyPrint>=62.0

@@ -1,63 +1,51 @@
 #!/usr/bin/env python3
 """
-markdown_stylist_mcp — 极简 Mac 风格 Markdown → HTML/PDF 转换器
-=================================================================
-Model Context Protocol (MCP) 服务端工具。
-将原始 Markdown 转化为具有专业排版的结构化报告。
+Markdown Stylist MCP
+====================
 
-架构:  数据解析 → 模板注入 → 格式转换  (三层 Pipeline)
-
-依赖:  markdown, Jinja2, WeasyPrint, beautifulsoup4
+Convert Markdown files into polished, self-contained HTML reports and optional
+PDF files. The module supports both an interactive CLI and MCP stdio mode.
 """
 
-import os
-import sys
-import json
-import hashlib
-import traceback
-from pathlib import Path
-from datetime import datetime
-from typing import Optional
+from __future__ import annotations
 
-# ── MCP SDK ──
+import asyncio
+import hashlib
+import html
+import json
+import re
+import sys
+import traceback
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import markdown
+from bs4 import BeautifulSoup
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import TextContent, Tool
 
-# ── Markdown 解析 ──
-import markdown
-from markdown.extensions import toc, fenced_code, tables, codehilite
-
-# ── Jinja2 模板 ──
-from jinja2 import Environment, FileSystemLoader
-
-# ── HTML 后处理 ──
-from bs4 import BeautifulSoup
-
-
-# ╔══════════════════════════════════════════════════════════════╗
-# ║                     CONFIGURATION                            ║
-# ╚══════════════════════════════════════════════════════════════╝
 
 PROJECT_ROOT = Path(__file__).parent
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 
-# Markdown 扩展配置
 MD_EXTENSIONS = [
-    "markdown.extensions.toc",       # 目录生成
-    "markdown.extensions.fenced_code",  # 围栏代码块
-    "markdown.extensions.tables",    # 表格
-    "markdown.extensions.codehilite",   # 代码高亮
-    "markdown.extensions.nl2br",     # 换行转 <br>
-    "markdown.extensions.sane_lists",   # 智能列表
+    "markdown.extensions.toc",
+    "markdown.extensions.fenced_code",
+    "markdown.extensions.tables",
+    "markdown.extensions.codehilite",
+    "markdown.extensions.nl2br",
+    "markdown.extensions.sane_lists",
+    "markdown.extensions.attr_list",
 ]
 
 MD_EXTENSION_CONFIGS = {
     "markdown.extensions.toc": {
-        "permalink": True,
-        "permalink_class": "toc-link",
-        "baselevel": 2,
-        "toc_depth": "2-4",
+        "permalink": False,
+        "toc_depth": "1-6",
     },
     "markdown.extensions.codehilite": {
         "guess_lang": False,
@@ -65,60 +53,67 @@ MD_EXTENSION_CONFIGS = {
     },
 }
 
-
-# 扫描时排除的目录名（避免扫描虚拟环境、版本控制等噪音）
 EXCLUDE_DIR_NAMES = {
-    ".venv", ".git", "__pycache__", "node_modules",
-    ".idea", ".vscode", "venv", "env", ".tox", ".eggs",
-    "build", "dist", ".mypy_cache", ".pytest_cache",
+    ".venv",
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".idea",
+    ".vscode",
+    "venv",
+    "env",
+    ".tox",
+    ".eggs",
+    "build",
+    "dist",
+    ".mypy_cache",
+    ".pytest_cache",
 }
 
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║               LAYER 1: DATA PARSING                          ║
-# ╚══════════════════════════════════════════════════════════════╝
+@dataclass
+class TocItem:
+    id: str
+    text: str
+    level: int
+    children: list["TocItem"]
+
 
 def discover_md_files(input_path: str) -> list[Path]:
-    """发现 MD 文件：支持单个文件或目录递归扫描。自动排除 .venv/.git 等噪音目录。"""
+    """Discover Markdown files from a single file or a directory tree."""
     path = Path(input_path).resolve()
     if not path.exists():
-        raise FileNotFoundError(f"路径不存在: {input_path}")
+        raise FileNotFoundError(f"Path does not exist: {input_path}")
 
     if path.is_file():
         if path.suffix.lower() == ".md":
             return [path]
-        else:
-            raise ValueError(f"文件不是 Markdown: {path.name}")
+        raise ValueError(f"File is not Markdown: {path.name}")
 
-    # 目录：递归收集 .md 文件，排除噪音目录
-    md_files = []
-    for f in path.rglob("*.md"):
-        # 跳过排除目录中的文件
-        if EXCLUDE_DIR_NAMES & set(f.parts):
+    md_files: list[Path] = []
+    for file_path in path.rglob("*.md"):
+        if EXCLUDE_DIR_NAMES & set(file_path.parts):
             continue
-        md_files.append(f)
+        md_files.append(file_path)
 
     if not md_files:
-        raise FileNotFoundError(f"目录中未找到 .md 文件: {path}")
+        raise FileNotFoundError(f"No .md files found under: {path}")
     return sorted(md_files)
 
 
-def parse_markdown(md_text: str) -> dict:
-    """将 Markdown 文本解析为 HTML 内容 + 提取 TOC。"""
-    md_instance = markdown.Markdown(
-        extensions=MD_EXTENSIONS,
-        extension_configs=MD_EXTENSION_CONFIGS,
-    )
-    body_html = md_instance.convert(md_text)
-
-    # 提取 TOC（markdown toc 扩展会把 TOC 写入 md_instance.toc）
-    toc_html = getattr(md_instance, "toc", "") or ""
-
-    return {"content_html": body_html, "toc_html": toc_html}
+def read_markdown_text(md_path: Path) -> str:
+    """Read Markdown with common UTF encodings and Chinese Windows fallback."""
+    raw = md_path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
 
 
 def extract_title(md_text: str, file_path: Path) -> str:
-    """从 Markdown 中提取标题：第一个 H1 或文件名。"""
+    """Extract the first H1 from Markdown, falling back to the file stem."""
     for line in md_text.splitlines():
         stripped = line.strip()
         if stripped.startswith("# ") and not stripped.startswith("## "):
@@ -126,65 +121,214 @@ def extract_title(md_text: str, file_path: Path) -> str:
     return file_path.stem.replace("_", " ")
 
 
-def extract_meta_items(md_text: str) -> list[dict]:
-    """从 Markdown 开头的 blockquote 行提取元数据项。"""
-    items = []
+def extract_meta_items(md_text: str) -> list[dict[str, str]]:
+    """Extract simple key/value metadata from leading blockquote lines."""
+    items: list[dict[str, str]] = []
     in_blockquote = False
     for line in md_text.splitlines()[:30]:
         stripped = line.strip()
         if stripped.startswith("> "):
             in_blockquote = True
             content = stripped[2:].strip()
-            # 尝试解析 "label: value" 或 "label：value"
-            if ":" in content:
-                parts = content.split(":", 1)
-                items.append({"label": parts[0].strip(), "value": parts[1].strip()})
-            elif "：" in content:
-                parts = content.split("：", 1)
-                items.append({"label": parts[0].strip(), "value": parts[1].strip()})
+            sep = ":" if ":" in content else "：" if "：" in content else ""
+            if sep:
+                label, value = content.split(sep, 1)
+                items.append({"label": label.strip(), "value": value.strip()})
         elif in_blockquote and stripped == ">":
             continue
-        elif in_blockquote and not stripped.startswith("> "):
+        elif in_blockquote:
             break
     return items
 
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║            LAYER 2: HTML POST-PROCESSING                     ║
-# ╚══════════════════════════════════════════════════════════════╝
+def _protect_fenced_code(md_text: str) -> tuple[str, dict[str, str]]:
+    blocks: dict[str, str] = {}
+    pattern = re.compile(r"(?ms)^(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^(?P=fence)[ \t]*$")
 
-def post_process_html(html: str) -> str:
-    """
-    对 markdown 生成的 HTML 进行 Mac 风格后处理：
-    - 给每个 <pre> 包裹 Mac 窗口装饰（三色圆点）
-    - 给表格添加所需 class
-    - 美化图片为 figure 结构
-    """
-    soup = BeautifulSoup(html, "lxml")
+    def replace(match: re.Match[str]) -> str:
+        token = f"@@CODE_BLOCK_{len(blocks)}@@"
+        blocks[token] = match.group(0)
+        return token
 
-    # 1. Mac 风格代码块：<pre> 包裹 .code-block-wrapper
-    for pre in soup.find_all("pre"):
+    return pattern.sub(replace, md_text), blocks
+
+
+def _restore_tokens(text: str, tokens: dict[str, str]) -> str:
+    for token, value in tokens.items():
+        text = text.replace(token, value)
+    return text
+
+
+def _render_math(latex: str, display: bool) -> str:
+    latex = latex.strip()
+    try:
+        from latex2mathml.converter import convert
+
+        mathml = convert(latex, display="block" if display else "inline")
+        wrapper = "div" if display else "span"
+        css_class = "math-display" if display else "math-inline"
+        return f'<{wrapper} class="{css_class}">{mathml}</{wrapper}>'
+    except Exception:
+        escaped = html.escape(latex)
+        if display:
+            return f'<div class="math-display math-fallback"><code>{escaped}</code></div>'
+        return f'<span class="math-inline math-fallback"><code>{escaped}</code></span>'
+
+
+def _extract_math(md_text: str) -> tuple[str, dict[str, str]]:
+    """Replace inline and block LaTeX with HTML placeholders before Markdown."""
+    text, code_blocks = _protect_fenced_code(md_text)
+    math_tokens: dict[str, str] = {}
+    result: list[str] = []
+    i = 0
+
+    while i < len(text):
+        if text.startswith("$$", i):
+            end = text.find("$$", i + 2)
+            if end != -1:
+                latex = text[i + 2 : end]
+                token = f"%%MATHBLOCK{len(math_tokens)}%%"
+                math_tokens[token] = _render_math(latex, display=True)
+                result.append(token)
+                i = end + 2
+                continue
+
+        if text[i] == "$" and (i == 0 or text[i - 1] != "\\"):
+            if i + 1 < len(text) and text[i + 1].isspace():
+                result.append(text[i])
+                i += 1
+                continue
+            end = i + 1
+            while end < len(text):
+                if text[end] == "$" and text[end - 1] != "\\":
+                    break
+                if text[end] == "\n":
+                    end = -1
+                    break
+                end += 1
+            if end != -1 and end < len(text):
+                latex = text[i + 1 : end]
+                if latex.strip():
+                    token = f"%%MATHINLINE{len(math_tokens)}%%"
+                    math_tokens[token] = _render_math(latex, display=False)
+                    result.append(token)
+                    i = end + 1
+                    continue
+
+        result.append(text[i])
+        i += 1
+
+    restored = _restore_tokens("".join(result), code_blocks)
+    return restored, math_tokens
+
+
+def _restore_math(html_text: str, math_tokens: dict[str, str]) -> str:
+    for token, rendered in math_tokens.items():
+        html_text = html_text.replace(token, rendered)
+    return html_text
+
+
+def _slugify(text: str, used_ids: set[str]) -> str:
+    base = re.sub(r"[^\w\u4e00-\u9fff\- ]+", "", text, flags=re.UNICODE).strip()
+    base = re.sub(r"\s+", "-", base).strip("-").lower()
+    if not base:
+        base = "section"
+    candidate = base
+    counter = 2
+    while candidate in used_ids:
+        candidate = f"{base}-{counter}"
+        counter += 1
+    used_ids.add(candidate)
+    return candidate
+
+
+def parse_markdown(md_text: str) -> dict[str, Any]:
+    """Parse Markdown to body HTML. Original [TOC] or manual TOCs stay in-place."""
+    protected_md, math_tokens = _extract_math(md_text)
+    md_instance = markdown.Markdown(
+        extensions=MD_EXTENSIONS,
+        extension_configs=MD_EXTENSION_CONFIGS,
+        output_format="html5",
+    )
+    body_html = md_instance.convert(protected_md)
+    body_html = _restore_math(body_html, math_tokens)
+    return {"content_html": body_html}
+
+
+def post_process_html(
+    html_text: str,
+    asset_base: Path | None = None,
+    document_title: str = "",
+) -> dict[str, Any]:
+    """Enhance parsed HTML, assign heading ids, and build independent sidebar TOC."""
+    soup = BeautifulSoup(html_text, "lxml")
+    body = soup.body or soup
+
+    used_ids: set[str] = set()
+    headings = []
+    title_heading = None
+    title_heading_id = ""
+    normalized_title = re.sub(r"\s+", " ", document_title).strip()
+    for heading in body.find_all(re.compile(r"^h[1-6]$")):
+        text = heading.get_text(" ", strip=True).replace("\u00b6", "").strip()
+        if not text:
+            continue
+        level = int(heading.name[1])
+        heading_id = heading.get("id") or _slugify(text, used_ids)
+        if heading_id in used_ids:
+            heading_id = _slugify(text, used_ids)
+        else:
+            used_ids.add(heading_id)
+        heading["id"] = heading_id
+        heading["class"] = list(set(heading.get("class", []) + ["section-heading"]))
+        headings.append({"id": heading_id, "text": text, "level": level})
+        if (
+            title_heading is None
+            and level == 1
+            and normalized_title
+            and re.sub(r"\s+", " ", text).strip() == normalized_title
+        ):
+            title_heading = heading
+            title_heading_id = heading_id
+
+    for pre in body.find_all("pre"):
+        if pre.find_parent("div", class_="code-block-wrapper"):
+            continue
         wrapper = soup.new_tag("div", attrs={"class": "code-block-wrapper"})
         header = soup.new_tag("div", attrs={"class": "code-block-header"})
-        header.append(_make_dot(soup, "red"))
-        header.append(_make_dot(soup, "yellow"))
-        header.append(_make_dot(soup, "green"))
+        for color in ("red", "yellow", "green"):
+            header.append(soup.new_tag("span", attrs={"class": f"mac-dot {color}"}))
         label = soup.new_tag("span", attrs={"class": "file-label"})
-        label.string = "code"
+        code = pre.find("code")
+        lang = ""
+        if code:
+            classes = code.get("class", [])
+            lang = next((c.replace("language-", "") for c in classes if c.startswith("language-")), "")
+        label.string = lang or "code"
         header.append(label)
         pre.wrap(wrapper)
         wrapper.insert(0, header)
 
-    # 2. 表格 class（CSS 已通过标签选择器处理，此处不强制加 class）
-    for table in soup.find_all("table"):
-        if "class" not in table.attrs:
-            table.attrs["class"] = []
+    for table in body.find_all("table"):
+        classes = table.get("class", [])
+        if "data-table" not in classes:
+            classes.append("data-table")
+        table["class"] = classes
+        if not table.find_parent("div", class_="table-wrapper"):
+            wrapper = soup.new_tag("div", attrs={"class": "table-wrapper"})
+            table.wrap(wrapper)
 
-    # 3. 图片包裹为 figure > img + figcaption（若图片后有 <em> 文本）
-    for img in soup.find_all("img"):
+    for img in body.find_all("img"):
+        src = img.get("src", "")
+        if asset_base and src and not re.match(r"^(?:[a-z][a-z0-9+.-]*:|#)", src, re.I):
+            img["src"] = (asset_base / src).resolve().as_uri()
+        if img.find_parent("figure"):
+            continue
         parent = img.parent
+        if parent and parent.name == "p" and len(parent.find_all(recursive=False)) == 1:
+            parent["class"] = list(set(parent.get("class", []) + ["image-block"]))
         next_sib = img.find_next_sibling()
-        if next_sib and next_sib.name == "em" and not img.find_parent("figure"):
+        if next_sib and next_sib.name == "em":
             figure = soup.new_tag("figure")
             img.wrap(figure)
             caption = soup.new_tag("figcaption")
@@ -192,199 +336,208 @@ def post_process_html(html: str) -> str:
             figure.append(caption)
             next_sib.decompose()
 
-    return str(soup)
+    for para in list(body.find_all("p")):
+        children = [child for child in para.contents if str(child).strip()]
+        if len(children) == 1:
+            child = children[0]
+            if getattr(child, "name", None) == "div" and "math-display" in child.get("class", []):
+                para.replace_with(child)
+
+    if title_heading is not None:
+        title_heading.decompose()
+
+    processed = "".join(str(child) for child in body.children)
+    return {
+        "content_html": processed,
+        "sidebar_toc": _build_toc_tree(headings),
+        "document_title_id": title_heading_id,
+    }
 
 
-def _make_dot(soup, color: str):
-    dot = soup.new_tag("span", attrs={"class": f"mac-dot {color}"})
-    return dot
+def _build_toc_tree(headings: list[dict[str, Any]]) -> list[TocItem]:
+    root: list[TocItem] = []
+    stack: list[tuple[int, TocItem]] = []
 
+    for item in headings:
+        node = TocItem(
+            id=item["id"],
+            text=item["text"],
+            level=item["level"],
+            children=[],
+        )
+        while stack and stack[-1][0] >= node.level:
+            stack.pop()
+        if stack:
+            stack[-1][1].children.append(node)
+        else:
+            root.append(node)
+        stack.append((node.level, node))
+    return root
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║         LAYER 3: TEMPLATE RENDERING & PDF CONVERSION         ║
-# ╚══════════════════════════════════════════════════════════════╝
 
 def get_jinja_env() -> Environment:
-    """获取 Jinja2 环境，加载 templates 目录。"""
     if not TEMPLATES_DIR.exists():
-        raise FileNotFoundError(f"模板目录不存在: {TEMPLATES_DIR}")
-    return Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
+        raise FileNotFoundError(f"Template directory does not exist: {TEMPLATES_DIR}")
+    return Environment(
+        loader=FileSystemLoader(str(TEMPLATES_DIR)),
+        autoescape=select_autoescape(enabled_extensions=("html", "xml")),
+    )
 
 
-def render_html(title: str, content_html: str, toc_html: str,
-                meta_items: list[dict]) -> str:
-    """用 Jinja2 模板将各部分注入完整 HTML。"""
+def render_html(
+    title: str,
+    content_html: str,
+    sidebar_toc: list[TocItem],
+    meta_items: list[dict[str, str]],
+    document_title_id: str = "",
+) -> str:
     env = get_jinja_env()
     template = env.get_template("base.html")
-
-    # TOC 中的 <a> 需要保留；内容已由 markdown 生成 HTML
     return template.render(
         title=title,
         content=content_html,
-        toc_html=toc_html,
+        sidebar_toc=sidebar_toc,
         meta_items=meta_items,
+        document_title_id=document_title_id,
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
 
 
 def _pdf_via_playwright(html_content: str, output_pdf_path: Path) -> bool:
-    """用 Playwright (无头 Chromium) 生成 PDF。成功返回 True。"""
     try:
         from playwright.sync_api import sync_playwright
+
         with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
+            try:
+                browser = p.chromium.launch()
+            except Exception:
+                browser = p.chromium.launch(executable_path=p.chromium.executable_path)
+            page = browser.new_page(viewport={"width": 1280, "height": 1600})
             page.set_content(html_content, wait_until="networkidle")
-            page.pdf(path=str(output_pdf_path), print_background=True,
-                     format="A4", margin={"top": "15mm", "bottom": "15mm",
-                                          "left": "12mm", "right": "12mm"})
+            page.emulate_media(media="print")
+            page.pdf(
+                path=str(output_pdf_path),
+                print_background=True,
+                format="A4",
+                margin={"top": "15mm", "bottom": "15mm", "left": "12mm", "right": "12mm"},
+            )
             browser.close()
         return True
-    except ImportError:
-        return False
     except Exception:
         return False
 
 
 def _pdf_via_weasyprint(html_content: str, output_pdf_path: Path) -> bool:
-    """用 WeasyPrint 生成 PDF。成功返回 True。"""
     try:
         from weasyprint import HTML
+
         HTML(string=html_content).write_pdf(str(output_pdf_path))
         return True
-    except ImportError:
-        return False
-    except OSError as e:
-        if "gobject" in str(e).lower() or "libgobject" in str(e).lower():
-            return False
-        return False
     except Exception:
         return False
 
 
-def check_pdf_support() -> dict:
-    """预检 PDF 生成能力。返回 {'ok': True/False, 'engine': ..., 'reason': ...}"""
-    # 优先检测 Playwright
+def check_pdf_support() -> dict[str, Any]:
     try:
         from playwright.sync_api import sync_playwright
+
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            try:
+                browser = p.chromium.launch()
+            except Exception:
+                browser = p.chromium.launch(executable_path=p.chromium.executable_path)
             page = browser.new_page()
             page.set_content("<p>test</p>")
             page.pdf()
             browser.close()
         return {"ok": True, "engine": "Playwright (Chromium)"}
-    except ImportError:
-        pass
     except Exception:
         pass
 
-    # 回退检测 WeasyPrint
     try:
         from weasyprint import HTML
+
         HTML(string="<p>test</p>").write_pdf()
         return {"ok": True, "engine": "WeasyPrint"}
     except ImportError:
-        return {"ok": False, "engine": None,
-                "reason": "PDF 引擎未安装。可选方案:\n"
-                          "  方案1 (推荐): pip install playwright && python -m playwright install chromium\n"
-                          "  方案2: pip install weasyprint (Windows 需额外安装 GTK3 runtime)"}
-    except OSError as e:
-        if "gobject" in str(e).lower() or "libgobject" in str(e).lower():
-            return {"ok": False, "engine": "WeasyPrint",
-                    "reason": "WeasyPrint 缺少 GTK3 系统库。建议改用 Playwright:\n"
-                              "  pip install playwright && python -m playwright install chromium"}
-        return {"ok": False, "engine": None, "reason": f"PDF 库加载失败: {e}"}
+        return {
+            "ok": False,
+            "engine": None,
+            "reason": (
+                "PDF engine is not installed. Recommended: "
+                "pip install playwright && python -m playwright install chromium"
+            ),
+        }
+    except Exception as exc:
+        return {"ok": False, "engine": None, "reason": f"PDF engine check failed: {exc}"}
 
 
 def convert_to_pdf(html_content: str, output_pdf_path: Path) -> str:
-    """将 HTML 转换为 PDF。优先使用 Playwright，回退到 WeasyPrint。"""
-    # 引擎 1: Playwright（Windows/Mac/Linux 通用，无需系统库）
     if _pdf_via_playwright(html_content, output_pdf_path):
         return str(output_pdf_path)
-
-    # 引擎 2: WeasyPrint（需 GTK3 系统库）
     if _pdf_via_weasyprint(html_content, output_pdf_path):
         return str(output_pdf_path)
-
-    # 两个引擎都不可用
     raise RuntimeError(
-        "PDF 生成失败：未检测到可用引擎。\n"
-        "  方案1 (推荐): pip install playwright && python -m playwright install chromium\n"
-        "  方案2: pip install weasyprint (Windows 需额外安装 GTK3 runtime)"
+        "PDF generation failed: no available engine. "
+        "Install Playwright with: pip install playwright && python -m playwright install chromium"
     )
 
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║                  CORE CONVERSION PIPELINE                     ║
-# ╚══════════════════════════════════════════════════════════════╝
-
-def process_single_file(md_path: Path, output_dir: Path,
-                        output_format: str,
-                        preserve_structure: bool = False,
-                        input_base: Path = None) -> dict:
-    """
-    处理单个 MD 文件的完整 Pipeline：
-      Layer 1: 读取 MD → parse_markdown() → HTML + TOC
-      Layer 2: post_process_html() → Mac 风格增强
-      Layer 3: render_html() → 完整 HTML → (可选) WeasyPrint PDF
-
-    preserve_structure=True 时，输出目录会保留相对输入路径的目录结构，
-    避免不同子目录中同名文件的输出冲突。
-    """
-    # 读取
-    md_text = md_path.read_text(encoding="utf-8")
+def process_single_file(
+    md_path: Path,
+    output_dir: Path,
+    output_format: str,
+    preserve_structure: bool = False,
+    input_base: Path | None = None,
+) -> dict[str, Any]:
+    md_text = read_markdown_text(md_path)
     if not md_text.strip():
-        return {"status": "skipped", "file": str(md_path), "reason": "文件为空"}
+        return {"status": "skipped", "file": str(md_path), "reason": "file is empty"}
 
-    # Layer 1: 解析
     title = extract_title(md_text, md_path)
     meta_items = extract_meta_items(md_text)
     parsed = parse_markdown(md_text)
+    processed = post_process_html(
+        parsed["content_html"],
+        asset_base=md_path.parent,
+        document_title=title,
+    )
+    content_html = processed["content_html"]
+    sidebar_toc = processed["sidebar_toc"]
+    document_title_id = processed.get("document_title_id", "")
 
-    # Layer 2: 后处理
-    content_html = post_process_html(parsed["content_html"])
-    toc_html = parsed["toc_html"]
-
-    # 补充默认元数据
     if not meta_items:
         meta_items = [
-            {"label": "文件", "value": md_path.name},
-            {"label": "路径", "value": str(md_path.parent)},
+            {"label": "File", "value": md_path.name},
+            {"label": "Path", "value": str(md_path.parent)},
         ]
-    meta_items.append({"label": "生成时间", "value": datetime.now().strftime("%Y-%m-%d %H:%M")})
+    meta_items.append({"label": "Generated", "value": datetime.now().strftime("%Y-%m-%d %H:%M")})
 
-    # Layer 3: 渲染
-    full_html = render_html(title, content_html, toc_html, meta_items)
+    full_html = render_html(title, content_html, sidebar_toc, meta_items, document_title_id)
 
-    # 输出目录（可选保留目录结构）
     if preserve_structure and input_base is not None:
         try:
             rel_path = md_path.parent.relative_to(input_base)
         except ValueError:
-            rel_path = md_path.parent.relative_to(md_path.anchor)
+            rel_path = Path()
         output_subdir = output_dir / rel_path
     else:
         output_subdir = output_dir
     output_subdir.mkdir(parents=True, exist_ok=True)
 
     stem = md_path.stem
-    result = {"file": str(md_path), "title": title, "outputs": {}}
+    result: dict[str, Any] = {"file": str(md_path), "title": title, "outputs": {}}
 
-    # HTML 输出 — 碰撞检测：同名文件用父目录名做后缀
     html_path = output_subdir / f"{stem}.html"
     if html_path.exists():
         parent_tag = md_path.parent.name
         html_path = output_subdir / f"{stem}__{parent_tag}.html"
     if html_path.exists():
-        # 仍有冲突则加上完整路径哈希
-        import hashlib
-        path_hash = hashlib.md5(str(md_path).encode()).hexdigest()[:6]
+        path_hash = hashlib.md5(str(md_path).encode("utf-8")).hexdigest()[:6]
         html_path = output_subdir / f"{stem}__{path_hash}.html"
     html_path.write_text(full_html, encoding="utf-8")
     result["outputs"]["html"] = str(html_path)
 
-    # PDF 输出
     if output_format in ("pdf", "both"):
         pdf_path = output_subdir / f"{stem}.pdf"
         if pdf_path.exists():
@@ -393,16 +546,12 @@ def process_single_file(md_path: Path, output_dir: Path,
         try:
             convert_to_pdf(full_html, pdf_path)
             result["outputs"]["pdf"] = str(pdf_path)
-        except Exception as e:
-            result["outputs"]["pdf_error"] = str(e)
+        except Exception as exc:
+            result["outputs"]["pdf_error"] = str(exc)
 
     result["status"] = "success"
     return result
 
-
-# ╔══════════════════════════════════════════════════════════════╗
-# ║                   MCP SERVER                                  ║
-# ╚══════════════════════════════════════════════════════════════╝
 
 mcp_server = Server("markdown-stylist")
 
@@ -412,14 +561,14 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="discover_md_files",
-            description="扫描目录，返回所有发现的 Markdown 文件列表。用于在转换前了解有哪些文件。",
+            description="Scan a path and return discovered Markdown files.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "input_path": {
                         "type": "string",
-                        "description": "要扫描的目录路径或单个 MD 文件路径",
-                    },
+                        "description": "Directory path or a single Markdown file path.",
+                    }
                 },
                 "required": ["input_path"],
             },
@@ -427,41 +576,40 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="convert_markdown",
             description=(
-                "将 Markdown 文件转换为具有 Mac 极简风格的专业 HTML/PDF 报告。\n"
-                "支持三种输出格式：html（Web 交互版）、pdf（专业打印版）、both（两者都输出）。\n"
-                "自动生成目录（TOC）、Mac 风格代码块（三色圆点）、斑马纹表格。\n"
-                "支持批量处理：可指定文件列表或目录（自动发现所有 .md 文件）。"
+                "Convert Markdown files to polished HTML/PDF reports. "
+                "Supports html, pdf, and both. Existing Markdown TOCs stay in the body; "
+                "an independent interactive sidebar TOC is generated for HTML."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "input_path": {
                         "type": "string",
-                        "description": "Markdown 文件路径或包含 MD 文件的目录路径",
+                        "description": "Markdown file path or a directory containing Markdown files.",
                     },
                     "output_path": {
                         "type": "string",
-                        "description": "输出目录路径（HTML/PDF 文件将保存到此目录）",
+                        "description": "Output directory path.",
                     },
                     "output_format": {
                         "type": "string",
                         "enum": ["html", "pdf", "both"],
-                        "description": "输出格式：'html'（仅 HTML）、'pdf'（仅 PDF）、'both'（HTML + PDF）",
+                        "description": "Output format: html, pdf, or both.",
                         "default": "html",
                     },
                     "files": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "可选。指定要转换的文件列表（绝对路径）。如果为空，则自动发现 input_path 下的所有 MD 文件。",
+                        "description": "Optional explicit Markdown file list.",
                     },
                     "preserve_structure": {
                         "type": "boolean",
-                        "description": "是否保留输入目录结构。true=输出目录镜像源目录层级（避免同名冲突）；false=扁平输出。默认 true。",
+                        "description": "Preserve source directory structure in the output directory.",
                         "default": True,
                     },
                     "batch_all_same": {
                         "type": "boolean",
-                        "description": "批量模式下，是否所有文件使用相同输出格式。true=统一格式，false=待扩展。",
+                        "description": "Reserved compatibility flag for batch conversions.",
                         "default": True,
                     },
                 },
@@ -470,261 +618,196 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="check_pdf_support",
-            description="预检当前系统是否支持 PDF 生成。检查 WeasyPrint 和 GTK3 系统库是否正常。",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
+            description="Check whether a PDF engine is available.",
+            inputSchema={"type": "object", "properties": {}},
         ),
     ]
 
 
 @mcp_server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    """路由 MCP 工具调用。"""
+async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     try:
         if name == "discover_md_files":
             return await handle_discover(arguments)
-        elif name == "convert_markdown":
+        if name == "convert_markdown":
             return await handle_convert(arguments)
-        elif name == "check_pdf_support":
+        if name == "check_pdf_support":
             return await handle_pdf_check()
-        else:
-            return [TextContent(type="text", text=f"未知工具: {name}")]
-    except Exception as e:
-        return [TextContent(type="text", text=f"❌ 错误: {e}\n{traceback.format_exc()}")]
+        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+    except Exception as exc:
+        return [TextContent(type="text", text=f"Error: {exc}\n{traceback.format_exc()}")]
 
 
-async def handle_discover(args: dict) -> list[TextContent]:
-    """处理文件发现请求。"""
-    input_path = args["input_path"]
-    md_files = discover_md_files(input_path)
-
-    lines = [f"📁 发现 {len(md_files)} 个 Markdown 文件:\n"]
-    for i, f in enumerate(md_files, 1):
-        size_kb = f.stat().st_size / 1024
-        lines.append(f"  {i}. {f.name} ({size_kb:.1f} KB)")
-        lines.append(f"     📍 {f}")
-
-    result = "\n".join(lines)
-
-    # 如果是目录，添加交互提示
-    if Path(input_path).is_dir() and len(md_files) > 1:
-        result += "\n\n---\n"
-        result += "💡 **交互提示：**\n"
-        result += "检测到多个文件。请询问用户：\n"
-        result += '  1. 是否全部统一输出为同一种格式？(Y/N)\n'
-        result += "  2. 选择输出格式：HTML / PDF / Both\n"
-        result += "然后将用户选择传递给 `convert_markdown` 工具。"
-
-    return [TextContent(type="text", text=result)]
+async def handle_discover(args: dict[str, Any]) -> list[TextContent]:
+    md_files = discover_md_files(args["input_path"])
+    lines = [f"Discovered {len(md_files)} Markdown file(s):"]
+    for i, file_path in enumerate(md_files, 1):
+        size_kb = file_path.stat().st_size / 1024
+        lines.append(f"  {i}. {file_path.name} ({size_kb:.1f} KB)")
+        lines.append(f"     {file_path}")
+    return [TextContent(type="text", text="\n".join(lines))]
 
 
 async def handle_pdf_check() -> list[TextContent]:
-    """PDF 预检处理器。"""
     status = check_pdf_support()
     if status["ok"]:
-        msg = "✅ PDF 生成能力正常，WeasyPrint + GTK3 系统库已就绪。"
+        msg = f"PDF generation is available: {status['engine']}"
     else:
-        msg = f"❌ PDF 不可用: {status['reason']}\n\n仅 HTML 输出可用。"
+        msg = f"PDF generation is not available: {status['reason']}"
     return [TextContent(type="text", text=msg)]
 
 
-async def handle_convert(args: dict) -> list[TextContent]:
-    """处理 Markdown 转换请求。"""
+async def handle_convert(args: dict[str, Any]) -> list[TextContent]:
     input_path = args["input_path"]
     output_path = args["output_path"]
     output_format = args.get("output_format", "html")
     specified_files = args.get("files", [])
     preserve_structure = args.get("preserve_structure", True)
-    batch_all_same = args.get("batch_all_same", True)
 
     input_base = Path(input_path).resolve()
     if input_base.is_file():
         input_base = input_base.parent
 
-    # 发现文件
     if specified_files:
-        md_files = [Path(f).resolve() for f in specified_files]
-        for f in md_files:
-            if not f.exists():
-                return [TextContent(type="text", text=f"❌ 文件不存在: {f}")]
+        md_files = [Path(file_path).resolve() for file_path in specified_files]
+        missing = [str(file_path) for file_path in md_files if not file_path.exists()]
+        if missing:
+            return [TextContent(type="text", text=f"Missing file(s): {', '.join(missing)}")]
     else:
         md_files = discover_md_files(input_path)
 
     output_dir = Path(output_path).resolve()
-    total = len(md_files)
-
-    # 碰撞检测：检查同名 stem 冲突，提前警告
-    collision_warning = ""
-    if not preserve_structure:
-        stems = [f.stem for f in md_files]
-        dupes = {s for s in stems if stems.count(s) > 1}
-        if dupes:
-            collision_warning = ("\n⚠️  检测到同名文件冲突（不同目录中存在同名 Markdown），已使用目录名后缀避免覆盖。\n"
-                                 "建议设置 preserve_structure=true 以保留目录结构。\n\n")
-
-    # 进度报告头
     report_lines = [
-        f"🚀 Markdown Stylist 转换报告",
-        f"━━━━━━━━━━━━━━━━━━━━━━",
-        f"📥 输入: {input_path}",
-        f"📤 输出: {output_dir}",
-        f"📄 文件数: {total}",
-        f"📋 格式: {output_format.upper()}",
-        f"📁 保留目录结构: {'是' if preserve_structure else '否'}",
-        f"",
+        "Markdown Stylist conversion report",
+        f"Input: {input_path}",
+        f"Output: {output_dir}",
+        f"Files: {len(md_files)}",
+        f"Format: {output_format.upper()}",
+        f"Preserve structure: {preserve_structure}",
+        "",
     ]
-    if collision_warning:
-        report_lines.append(collision_warning)
 
-    results = []
     success_count = 0
-
     for i, md_file in enumerate(md_files, 1):
-        report_lines.append(f"[{i}/{total}] ⏳ {md_file.name} ...")
+        report_lines.append(f"[{i}/{len(md_files)}] {md_file.name}")
         try:
-            result = process_single_file(md_file, output_dir, output_format,
-                                         preserve_structure=preserve_structure,
-                                         input_base=input_base)
-            results.append(result)
-
+            result = process_single_file(
+                md_file,
+                output_dir,
+                output_format,
+                preserve_structure=preserve_structure,
+                input_base=input_base,
+            )
             if result["status"] == "success":
                 success_count += 1
-                outs = result.get("outputs", {})
-                html_out = outs.get("html", "")
-                pdf_out = outs.get("pdf", "")
-                if html_out:
-                    report_lines.append(f"       ✅ HTML: {html_out}")
-                if pdf_out:
-                    report_lines.append(f"       ✅ PDF:  {pdf_out}")
-                if "pdf_error" in outs:
-                    report_lines.append(f"       ⚠️  PDF 失败: {outs['pdf_error']}")
+                outputs = result.get("outputs", {})
+                if outputs.get("html"):
+                    report_lines.append(f"  HTML: {outputs['html']}")
+                if outputs.get("pdf"):
+                    report_lines.append(f"  PDF: {outputs['pdf']}")
+                if outputs.get("pdf_error"):
+                    report_lines.append(f"  PDF error: {outputs['pdf_error']}")
             else:
-                report_lines.append(f"       ⚠️  {result.get('reason', '未知错误')}")
-        except Exception as e:
-            results.append({"status": "error", "file": str(md_file), "error": str(e)})
-            report_lines.append(f"       ❌ 错误: {e}")
+                report_lines.append(f"  Skipped: {result.get('reason', 'unknown reason')}")
+        except Exception as exc:
+            report_lines.append(f"  Error: {exc}")
 
     report_lines.append("")
-    report_lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    report_lines.append(f"✅ 成功: {success_count}/{total}")
-
-    if success_count < total:
-        report_lines.append(f"⚠️  失败: {total - success_count} 个文件")
-
-    # 输出目录汇总
-    report_lines.append(f"\n📂 所有输出文件位于: {output_dir}")
-    if output_format in ("html", "both"):
-        report_lines.append(f"   HTML: {output_dir}/*.html")
-    if output_format in ("pdf", "both"):
-        report_lines.append(f"   PDF:  {output_dir}/*.pdf")
-
+    report_lines.append(f"Success: {success_count}/{len(md_files)}")
     return [TextContent(type="text", text="\n".join(report_lines))]
 
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║                     ENTRY POINT                              ║
-# ╚══════════════════════════════════════════════════════════════╝
-
-def cli_main():
-    """交互式命令行模式：人直接运行 python markdown_stylist_mcp.py 时进入。"""
+def cli_main() -> None:
     print("=" * 52)
-    print("  Markdown Stylist — 极简 Mac 风格 MD -> HTML/PDF")
+    print("  Markdown Stylist - MD -> HTML/PDF")
     print("=" * 52)
     print()
 
-    # ── Step 1: 输入路径 ──
     while True:
-        input_path = input("[INPUT] 请输入 Markdown 文件或目录路径: ").strip().strip('"')
+        input_path = input("[INPUT] Markdown file or directory: ").strip().strip('"')
         if not input_path:
-            print("[WARN] 路径不能为空，请重新输入。\n")
+            print("[WARN] Input path cannot be empty.\n")
             continue
-        p = Path(input_path).resolve()
-        if not p.exists():
-            print(f"[ERROR] 路径不存在: {p}\n")
+        source = Path(input_path).resolve()
+        if not source.exists():
+            print(f"[ERROR] Path does not exist: {source}\n")
             continue
         break
 
-    # 发现文件
-    if p.is_file():
-        md_files = [p]
-        print(f"   [FILE] 单文件模式: {p.name}")
+    if source.is_file():
+        md_files = [source]
+        print(f"   [FILE] {source.name}")
     else:
-        md_files = discover_md_files(str(p))
-        print(f"   [DIR] 目录模式: 发现 {len(md_files)} 个 Markdown 文件:")
-        for i, f in enumerate(md_files, 1):
-            size_kb = f.stat().st_size / 1024
-            print(f"      {i}. {f.name} ({size_kb:.1f} KB)")
+        md_files = discover_md_files(str(source))
+        print(f"   [DIR] Found {len(md_files)} Markdown file(s):")
+        for i, file_path in enumerate(md_files, 1):
+            size_kb = file_path.stat().st_size / 1024
+            print(f"      {i}. {file_path.name} ({size_kb:.1f} KB)")
         print()
 
-    # ── Step 2: 输出路径 ──
     while True:
-        output_path = input("[OUTPUT] 请输入输出目录路径: ").strip().strip('"')
+        output_path = input("[OUTPUT] Output directory: ").strip().strip('"')
         if not output_path:
-            print("[WARN] 路径不能为空，请重新输入。\n")
+            print("[WARN] Output path cannot be empty.\n")
             continue
         output_dir = Path(output_path).resolve()
         break
 
-    # ── Step 3: 输出格式 ──
     print()
-    print("[FORMAT] 请选择输出格式:")
-    print("   1. HTML（网页交互版）")
-    print("   2. PDF（专业打印版）")
-
+    print("[FORMAT] Select output format:")
+    print("   1. HTML")
+    print("   2. PDF")
     while True:
-        choice = input("   请输入 1 或 2: ").strip()
+        choice = input("   Enter 1 or 2: ").strip()
         if choice == "1":
             output_format = "html"
             break
-        elif choice == "2":
+        if choice == "2":
             output_format = "pdf"
             break
-        else:
-            print("[WARN] 无效选择，请输入 1 或 2。")
+        print("[WARN] Invalid selection.")
 
-    # ── Step 4: 执行转换 ──
     print()
     print("-" * 52)
-    print(f"[START] 开始转换 | 格式: {output_format.upper()} | 文件数: {len(md_files)}")
+    print(f"[START] Format: {output_format.upper()} | Files: {len(md_files)}")
     print("-" * 52)
 
-    input_base = p.parent if p.is_file() else p
+    input_base = source.parent if source.is_file() else source
     output_dir.mkdir(parents=True, exist_ok=True)
     success = 0
-
     for i, md_file in enumerate(md_files, 1):
         print(f"[{i}/{len(md_files)}] {md_file.name} ...", end=" ", flush=True)
         try:
-            result = process_single_file(md_file, output_dir, output_format,
-                                         preserve_structure=True, input_base=input_base)
+            result = process_single_file(
+                md_file,
+                output_dir,
+                output_format,
+                preserve_structure=True,
+                input_base=input_base,
+            )
             if result["status"] == "success":
-                outs = result.get("outputs", {})
-                out_path = outs.get(output_format, "")
-                if out_path:
-                    print(f"OK -> {Path(out_path).name}")
-                elif "pdf_error" in outs:
-                    print(f"WARN: {outs['pdf_error'][:50]}")
-                else:
-                    print("OK")
+                outputs = result.get("outputs", {})
+                out_path = outputs.get(output_format) or outputs.get("html")
+                print(f"OK -> {Path(out_path).name if out_path else 'done'}")
                 success += 1
             else:
-                print(f"SKIP: {result.get('reason', '未知')}")
-        except Exception as e:
-            print(f"ERROR: {e}")
+                print(f"SKIP: {result.get('reason', 'unknown')}")
+        except Exception as exc:
+            print(f"ERROR: {exc}")
 
     print()
-    print(f"[DONE] 成功 {success}/{len(md_files)}  ->  {output_dir}")
+    print(f"[DONE] Success {success}/{len(md_files)} -> {output_dir}")
 
 
-def main():
-    """启动 MCP stdio 服务端。"""
-    import asyncio
-    async def run():
+def main() -> None:
+    async def run() -> None:
         async with stdio_server() as (read_stream, write_stream):
-            await mcp_server.run(read_stream, write_stream,
-                                 mcp_server.create_initialization_options())
+            await mcp_server.run(
+                read_stream,
+                write_stream,
+                mcp_server.create_initialization_options(),
+            )
+
     asyncio.run(run())
 
 
